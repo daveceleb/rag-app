@@ -1,0 +1,4 @@
+ollama
+google-generativeai
+pyodbc
+streamlit

@@ -1,5 +1,6 @@
 """
 Embedding pipeline for generating embeddings and building FAISS vector store.
+Uses OpenAI API for embeddings.
 """
 
 import json
@@ -7,7 +8,7 @@ import logging
 import numpy as np
 import pandas as pd
 import faiss
-import google.generativeai as genai
+from openai import OpenAI
 from database import get_engine, get_table_structure
 from sqlalchemy import text
 import os
@@ -16,35 +17,36 @@ import os
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configure Gemini API
-def configure_gemini(api_key):
-    """Configure Gemini API with the provided key."""
+# Configure OpenAI
+def configure_openai(api_key):
+    """Configure OpenAI client with the provided key."""
     try:
-        genai.configure(api_key=api_key)
-        logger.info("Gemini API configured successfully")
-        return True
+        client = OpenAI(api_key=api_key)
+        logger.info("OpenAI API configured successfully")
+        return client
     except Exception as e:
-        logger.error(f"Failed to configure Gemini API: {str(e)}")
-        return False
+        logger.error(f"Failed to configure OpenAI API: {str(e)}")
+        return None
 
 
-def get_embedding(text, model="models/embedding-001"):
+def get_embedding(text, client, model="text-embedding-3-small"):
     """
-    Generate embedding for a given text using Gemini Embeddings API.
+    Generate embedding for a given text using OpenAI API.
     
     Args:
         text (str): Text to embed
+        client: OpenAI client instance
         model (str): Embedding model to use
         
     Returns:
         list: Embedding vector, or None if error
     """
     try:
-        response = genai.embed_content(
+        response = client.embeddings.create(
             model=model,
-            content=text
+            input=text
         )
-        return response['embedding']
+        return response.data[0].embedding
     except Exception as e:
         logger.error(f"Error generating embedding: {str(e)}")
         return None
@@ -177,25 +179,28 @@ def load_vector_mapping(mapping_path="vector_map.json"):
         return None
 
 
-def process_dataset_for_embeddings(table_name, gemini_api_key, 
+def process_dataset_for_embeddings(table_name, openai_api_key, 
                                   index_path="vector_store.index",
-                                  mapping_path="vector_map.json"):
+                                  mapping_path="vector_map.json",
+                                  model="text-embedding-3-small"):
     """
     Complete pipeline: fetch dataset, generate embeddings, build FAISS index.
     
     Args:
         table_name (str): Name of the dataset table in SQL Server
-        gemini_api_key (str): Gemini API key
+        openai_api_key (str): OpenAI API key
         index_path (str): Path to save FAISS index
         mapping_path (str): Path to save vector mapping
+        model (str): OpenAI embedding model to use
         
     Returns:
         tuple: (success: bool, message: str, stats: dict)
     """
     try:
-        # Configure Gemini API
-        if not configure_gemini(gemini_api_key):
-            return False, "Failed to configure Gemini API", {}
+        # Configure OpenAI client
+        client = configure_openai(openai_api_key)
+        if client is None:
+            return False, "Failed to configure OpenAI API", {}
         
         # Fetch dataset from SQL Server
         logger.info(f"Fetching dataset from table: {table_name}")
@@ -219,7 +224,7 @@ def process_dataset_for_embeddings(table_name, gemini_api_key,
         failed_count = 0
         
         for idx, chunk in enumerate(text_chunks):
-            embedding = get_embedding(chunk)
+            embedding = get_embedding(chunk, client, model)
             if embedding is not None:
                 embeddings.append(embedding)
             else:
@@ -253,7 +258,8 @@ def process_dataset_for_embeddings(table_name, gemini_api_key,
             "embedding_dimension": len(embeddings[0]) if embeddings else 0,
             "failed_embeddings": failed_count,
             "index_path": saved_index_path,
-            "mapping_path": saved_mapping_path
+            "mapping_path": saved_mapping_path,
+            "model_used": model
         }
         
         final_message = f"✅ Dataset indexed successfully!\n- Rows processed: {len(df)}\n- Embeddings created: {len(embeddings)}\n- Embedding dimension: {len(embeddings[0])}"
@@ -267,27 +273,31 @@ def process_dataset_for_embeddings(table_name, gemini_api_key,
         return False, error_msg, {}
 
 
-def search_similar(query_text, gemini_api_key, index_path="vector_store.index", 
-                  mapping_path="vector_map.json", top_k=5):
+def search_similar(query_text, openai_api_key, index_path="vector_store.index", 
+                  mapping_path="vector_map.json", top_k=5,
+                  model="text-embedding-3-small"):
     """
     Search for similar content in the FAISS index.
     
     Args:
         query_text (str): Query text
-        gemini_api_key (str): Gemini API key
+        openai_api_key (str): OpenAI API key
         index_path (str): Path to FAISS index
         mapping_path (str): Path to vector mapping
         top_k (int): Number of top results to return
+        model (str): OpenAI embedding model to use
         
     Returns:
         tuple: (success: bool, results: list, message: str)
     """
     try:
-        # Configure Gemini API
-        configure_gemini(gemini_api_key)
+        # Configure OpenAI client
+        client = configure_openai(openai_api_key)
+        if client is None:
+            return False, [], "Failed to configure OpenAI API"
         
         # Generate query embedding
-        query_embedding = get_embedding(query_text)
+        query_embedding = get_embedding(query_text, client, model)
         if query_embedding is None:
             return False, [], "Failed to generate query embedding"
         
@@ -326,3 +336,130 @@ def search_similar(query_text, gemini_api_key, index_path="vector_store.index",
         error_msg = f"Error searching FAISS index: {str(e)}"
         logger.error(error_msg)
         return False, [], error_msg
+
+
+def create_text_chunks(df):
+    """
+    Convert DataFrame rows into text chunks.
+    Each row becomes a single text chunk by joining all column values.
+    
+    Args:
+        df (pd.DataFrame): Input DataFrame
+        
+    Returns:
+        list: List of text chunks
+    """
+    try:
+        text_chunks = []
+        for idx, row in df.iterrows():
+            # Join all column values into a single string
+            chunk = ' '.join([f"{col}: {str(val)}" for col, val in row.items()])
+            text_chunks.append(chunk)
+        
+        logger.info(f"Created {len(text_chunks)} text chunks from dataset")
+        return text_chunks
+    except Exception as e:
+        logger.error(f"Error creating text chunks: {str(e)}")
+        return []
+
+
+def build_faiss_index(embeddings, index_path="vector_store.index"):
+    """
+    Build FAISS index from embeddings and save it locally.
+    
+    Args:
+        embeddings (list): List of embedding vectors
+        index_path (str): Path to save FAISS index
+        
+    Returns:
+        tuple: (success: bool, index_path: str, message: str)
+    """
+    try:
+        if not embeddings or len(embeddings) == 0:
+            return False, None, "No embeddings to build index"
+        
+        # Convert to numpy array
+        embeddings_array = np.array(embeddings).astype('float32')
+        
+        # Get embedding dimension
+        dim = embeddings_array.shape[1]
+        
+        # Create FAISS index
+        index = faiss.IndexFlatL2(dim)
+        index.add(embeddings_array)
+        
+        # Save index
+        faiss.write_index(index, index_path)
+        
+        message = f"✅ FAISS index created with {len(embeddings)} embeddings (dim: {dim})"
+        logger.info(message)
+        return True, index_path, message
+    
+    except Exception as e:
+        error_msg = f"Error building FAISS index: {str(e)}"
+        logger.error(error_msg)
+        return False, None, error_msg
+
+
+def save_vector_mapping(text_chunks, table_name, mapping_path="vector_map.json"):
+    """
+    Save mapping between vector IDs and original text chunks.
+    
+    Args:
+        text_chunks (list): List of text chunks
+        table_name (str): Name of the dataset table
+        mapping_path (str): Path to save mapping JSON
+        
+    Returns:
+        tuple: (success: bool, mapping_path: str, message: str)
+    """
+    try:
+        mapping = {
+            "table_name": table_name,
+            "total_vectors": len(text_chunks),
+            "vectors": {
+                str(idx): {
+                    "id": idx,
+                    "text": chunk
+                }
+                for idx, chunk in enumerate(text_chunks)
+            }
+        }
+        
+        with open(mapping_path, 'w', encoding='utf-8') as f:
+            json.dump(mapping, f, indent=2, ensure_ascii=False)
+        
+        message = f"✅ Vector mapping saved with {len(text_chunks)} entries"
+        logger.info(message)
+        return True, mapping_path, message
+    
+    except Exception as e:
+        error_msg = f"Error saving vector mapping: {str(e)}"
+        logger.error(error_msg)
+        return False, None, error_msg
+
+
+def load_vector_mapping(mapping_path="vector_map.json"):
+    """
+    Load vector mapping from JSON file.
+    
+    Args:
+        mapping_path (str): Path to mapping JSON
+        
+    Returns:
+        dict: Mapping dictionary, or None if error
+    """
+    try:
+        if not os.path.exists(mapping_path):
+            logger.warning(f"Mapping file not found: {mapping_path}")
+            return None
+        
+        with open(mapping_path, 'r', encoding='utf-8') as f:
+            mapping = json.load(f)
+        
+        logger.info(f"Loaded mapping with {mapping.get('total_vectors', 0)} vectors")
+        return mapping
+    
+    except Exception as e:
+        logger.error(f"Error loading vector mapping: {str(e)}")
+        return None

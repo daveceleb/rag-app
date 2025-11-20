@@ -8,8 +8,8 @@ import numpy as np
 import faiss
 import os
 import logging
-from embedding_pipeline import get_embedding, configure_gemini, load_vector_mapping
-import google.generativeai as genai
+from embedding_pipeline import get_embedding, configure_openai, load_vector_mapping
+from openai import OpenAI
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -27,8 +27,8 @@ if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
 if 'active_dataset' not in st.session_state:
     st.session_state.active_dataset = None
-if 'gemini_api_key' not in st.session_state:
-    st.session_state.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
+if 'openai_api_key' not in st.session_state:
+    st.session_state.openai_api_key = os.getenv("OPENAI_API_KEY", "")
 
 
 def load_faiss_index(index_path="vector_store.index"):
@@ -45,7 +45,7 @@ def load_faiss_index(index_path="vector_store.index"):
         return None, error_msg
 
 
-def retrieve_context(query, index, vector_map, gemini_api_key, top_k=5):
+def retrieve_context(query, index, vector_map, openai_api_key, top_k=5):
     """
     Retrieve context from FAISS index based on query similarity.
     
@@ -53,7 +53,7 @@ def retrieve_context(query, index, vector_map, gemini_api_key, top_k=5):
         query (str): User query
         index: FAISS index
         vector_map (dict): Mapping of vector IDs to text
-        gemini_api_key (str): Gemini API key for embeddings
+        openai_api_key (str): OpenAI API key for embeddings
         top_k (int): Number of top results to retrieve
         
     Returns:
@@ -66,11 +66,13 @@ def retrieve_context(query, index, vector_map, gemini_api_key, top_k=5):
         if vector_map is None or vector_map.get('total_vectors', 0) == 0:
             return False, [], "Vector mapping not available"
         
-        # Configure Gemini for embedding
-        configure_gemini(gemini_api_key)
+        # Configure OpenAI client
+        client = configure_openai(openai_api_key)
+        if client is None:
+            return False, [], "Failed to configure OpenAI API"
         
         # Generate query embedding
-        query_embedding = get_embedding(query)
+        query_embedding = get_embedding(query, client)
         if query_embedding is None:
             return False, [], "Failed to generate query embedding"
         
@@ -100,15 +102,15 @@ def retrieve_context(query, index, vector_map, gemini_api_key, top_k=5):
         return False, [], error_msg
 
 
-def ask_gemini(query, context_list, gemini_api_key, model="gemini-1.5-pro-latest"):
+def ask_openai(query, context_list, openai_api_key, model="gpt-3.5-turbo"):
     """
-    Generate answer using Gemini based on query and context.
+    Generate answer using OpenAI based on query and context.
     
     Args:
         query (str): User query
         context_list (list): List of context items from retrieval
-        gemini_api_key (str): Gemini API key
-        model (str): Gemini model to use
+        openai_api_key (str): OpenAI API key
+        model (str): OpenAI model to use
         
     Returns:
         tuple: (success: bool, answer: str, message: str)
@@ -117,8 +119,10 @@ def ask_gemini(query, context_list, gemini_api_key, model="gemini-1.5-pro-latest
         if not context_list:
             return False, "", "No context available to answer the question"
         
-        # Configure Gemini
-        configure_gemini(gemini_api_key)
+        # Configure OpenAI client
+        client = configure_openai(openai_api_key)
+        if client is None:
+            return False, "", "Failed to configure OpenAI API"
         
         # Build context text
         context_text = "\n".join([
@@ -137,12 +141,19 @@ Question: {query}
 
 Answer:"""
         
-        # Generate response
-        model_obj = genai.GenerativeModel(model)
-        response = model_obj.generate_content(prompt)
+        # Generate response using OpenAI
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are a helpful data assistant that answers questions based on provided dataset context."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=500
+        )
         
-        answer = response.text if response.text else "No response generated"
-        logger.info(f"Generated answer successfully")
+        answer = response.choices[0].message.content if response.choices else "No response generated"
+        logger.info(f"Generated answer successfully using {model}")
         return True, answer, "Answer generated successfully"
     
     except Exception as e:
@@ -195,9 +206,9 @@ def main():
             st.switch_page("app.py")
         return
     
-    # Check if Gemini API key is configured
-    if not st.session_state.gemini_api_key:
-        st.error("❌ Gemini API key not configured. Please configure it in the main app settings.")
+    # Check if OpenAI API key is configured
+    if not st.session_state.openai_api_key:
+        st.error("❌ OpenAI API key not configured. Please configure it in the main app settings.")
         return
     
     st.success(f"✅ Active Dataset: `{st.session_state.active_dataset}`")
@@ -242,7 +253,7 @@ def main():
                 user_query,
                 index,
                 vector_map,
-                st.session_state.gemini_api_key,
+                st.session_state.openai_api_key,
                 top_k=5
             )
         
@@ -253,10 +264,10 @@ def main():
         st.success(f"✅ Retrieved {len(context_list)} relevant sources")
         
         with st.spinner("🤔 Generating answer..."):
-            answer_success, answer, answer_msg = ask_gemini(
+            answer_success, answer, answer_msg = ask_openai(
                 user_query,
                 context_list,
-                st.session_state.gemini_api_key
+                st.session_state.openai_api_key
             )
         
         if not answer_success:

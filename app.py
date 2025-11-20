@@ -28,8 +28,8 @@ if 'last_uploaded_file' not in st.session_state:
     st.session_state.last_uploaded_file = None
 if 'show_datasets' not in st.session_state:
     st.session_state.show_datasets = False
-if 'gemini_api_key' not in st.session_state:
-    st.session_state.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
+if 'openai_api_key' not in st.session_state:
+    st.session_state.openai_api_key = os.getenv("OPENAI_API_KEY", "")
 
 
 # Main App
@@ -86,7 +86,8 @@ def main():
             if uploaded_file is not None and st.session_state.last_uploaded_file != uploaded_file.name:
                 try:
                     # Read CSV file
-                    df = pd.read_csv(uploaded_file)
+                    df = pd.read_csv(uploaded_file) 
+                    
                     st.session_state.uploaded_data = df
                     
                     # Generate unique table name with timestamp
@@ -117,13 +118,13 @@ def main():
                         with col3:
                             st.metric("Table Name", table_name)
                         
-                        # Check if Gemini API key is configured
-                        if st.session_state.gemini_api_key:
+                        # Check if OpenAI API key is configured
+                        if st.session_state.openai_api_key:
                             st.info("🚀 Processing embeddings...")
                             with st.spinner("Generating embeddings and building vector index..."):
                                 embed_success, embed_message, embed_stats = process_dataset_for_embeddings(
                                     table_name,
-                                    st.session_state.gemini_api_key
+                                    st.session_state.openai_api_key
                                 )
                             
                             if embed_success:
@@ -133,7 +134,7 @@ def main():
                             else:
                                 st.warning(f"⚠️ Embedding generation failed: {embed_message}\nYou can still use the dataset without embeddings.")
                         else:
-                            st.warning("⚠️ Gemini API key not configured. Embeddings will not be generated. Configure it in Settings.")
+                            st.warning("⚠️ OpenAI API key not configured. Embeddings will not be generated. Configure it in Settings.")
                         
                         # Switch to dataset selection
                         st.info("✅ Dataset saved! Switch to 'Browse Datasets' to work with it.")
@@ -191,14 +192,14 @@ def main():
                         st.info("✅ Embeddings already exist for this dataset")
                     else:
                         if st.button("🔄 Generate Embeddings Now", use_container_width=True):
-                            if not st.session_state.gemini_api_key:
-                                st.error("❌ Gemini API key not configured. Configure it in Settings first.")
+                            if not st.session_state.openai_api_key:
+                                st.error("❌ OpenAI API key not configured. Configure it in Settings first.")
                             else:
                                 st.info("🚀 Generating embeddings...")
                                 with st.spinner("This may take a few minutes depending on dataset size..."):
                                     embed_success, embed_message, embed_stats = process_dataset_for_embeddings(
                                         selected_table_name,
-                                        st.session_state.gemini_api_key
+                                        st.session_state.openai_api_key
                                     )
                                 
                                 if embed_success:
@@ -222,9 +223,9 @@ def main():
         # App info
         st.subheader("ℹ️ About")
         st.markdown("""
-        - **Version**: 0.3.0
+        - **Version**: 0.4.0
         - **Database**: SQL Server
-        - **AI Model**: Google Gemini
+        - **AI Model**: OpenAI (Free-tier)
         - **Database**: AcademicDB
         """)
         
@@ -233,18 +234,18 @@ def main():
         st.subheader("⚙️ Settings")
         
         with st.expander("🔑 API Configuration"):
-            gemini_key_input = st.text_input(
-                "Gemini API Key",
-                value=st.session_state.gemini_api_key,
+            openai_key_input = st.text_input(
+                "OpenAI API Key",
+                value=st.session_state.openai_api_key,
                 type="password",
-                help="Enter your Google Gemini API key for embeddings"
+                help="Enter your OpenAI API key for embeddings"
             )
             
-            if gemini_key_input != st.session_state.gemini_api_key:
-                st.session_state.gemini_api_key = gemini_key_input
+            if openai_key_input != st.session_state.openai_api_key:
+                st.session_state.openai_api_key = openai_key_input
                 st.success("✅ API key updated")
             
-            st.caption("Get your API key from: https://ai.google.dev")
+            st.caption("Get your API key from: https://platform.openai.com/account/api-keys")
     
     # Main content area - Show active dataset info
     if st.session_state.active_dataset:
